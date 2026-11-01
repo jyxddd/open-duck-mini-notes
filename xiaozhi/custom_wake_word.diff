@@ -1,0 +1,34 @@
+diff --git a/main/audio/wake_words/custom_wake_word.cc b/main/audio/wake_words/custom_wake_word.cc
+index 681d02c..8607d77 100644
+--- a/main/audio/wake_words/custom_wake_word.cc
++++ b/main/audio/wake_words/custom_wake_word.cc
+@@ -7,6 +7,8 @@
+ #include <esp_mn_iface.h>
+ #include <esp_mn_models.h>
+ #include <esp_mn_speech_commands.h>
++#include "duck_local.h"
++#include "application.h"
+ #include <cJSON.h>
+ 
+ #define TAG "CustomWakeWord"
+@@ -93,6 +95,8 @@ bool CustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list)
+ #ifdef CONFIG_CUSTOM_WAKE_WORD
+         threshold_ = CONFIG_CUSTOM_WAKE_WORD_THRESHOLD / 100.0f;
+         commands_.push_back({CONFIG_CUSTOM_WAKE_WORD, CONFIG_CUSTOM_WAKE_WORD_DISPLAY, "wake"});
++        commands_.push_back({"ni hao xiao zhi", "你好小智", "wake"});
++        commands_.push_back({"ting xia", "停下", "duck_stop"});
+ #endif
+     } else {
+         models_ = models_list;
+@@ -192,7 +196,10 @@ void CustomWakeWord::FeedSamples(const int16_t* data, size_t samples, bool mono)
+                 ESP_LOGI(TAG, "Custom wake word detected: command_id=%d, string=%s, prob=%f", 
+                         mn_result->command_id[i], mn_result->string, mn_result->prob[i]);
+                 auto& command = commands_[mn_result->command_id[i] - 1];
+-                if (command.action == "wake") {
++                if (command.action == "duck_stop") {
++                    duck_local::StopDuck();
++                } else if (command.action == "wake" &&
++                           Application::GetInstance().GetDeviceState() != kDeviceStateListening) {
+                     last_detected_wake_word_ = command.text;
+                     running_ = false;
+                     input_buffer_.clear();

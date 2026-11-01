@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="鸭子遥控">
+<title>鸭子遥控</title>
+<style>
+  :root { --bg:#f6f5f2; --card:#fff; --ink:#1d1d1f; --quiet:#6e6e73; --line:#d8d6d0;
+          --go:#2f7d4f; --stop:#c0392b; --accent:#2c6db5; --warn:#b7791f; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#16171a; --card:#222327; --ink:#f2f2f2; --quiet:#a0a0a6; --line:#3a3b40;
+            --go:#4caf75; --stop:#e05a4b; --accent:#5b9be0; --warn:#d9a441; }
+  }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  body { margin:0; padding:16px; background:var(--bg); color:var(--ink);
+         font:16px -apple-system, "PingFang SC", "Helvetica Neue", sans-serif;
+         -webkit-user-select:none; user-select:none; -webkit-touch-callout:none; }
+  h1 { font-size:20px; margin:0 0 12px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:12px; margin-bottom:12px; }
+  .status { display:grid; grid-template-columns:auto 1fr; gap:4px 12px; font-size:15px; }
+  .status b { color:var(--quiet); font-weight:500; }
+  .state { font-weight:700; }
+  .hint { font-size:14px; color:var(--quiet); margin:8px 0 0; }
+  .grid { display:grid; gap:8px; }
+  .g2 { grid-template-columns:1fr 1fr; } .g3 { grid-template-columns:1fr 1fr 1fr; }
+  button { font:inherit; font-size:17px; padding:14px 6px; border-radius:10px; border:1px solid var(--line);
+           background:var(--card); color:var(--ink); touch-action:manipulation; }
+  button:active, button.held { background:var(--accent); color:#fff; border-color:var(--accent); }
+  .go { background:var(--go); color:#fff; border-color:var(--go); }
+  .stop { background:var(--stop); color:#fff; border-color:var(--stop); font-weight:700; }
+  .power { background:var(--warn); color:#fff; border-color:var(--warn); }
+  .label { font-size:13px; color:var(--quiet); margin:0 0 8px; }
+  .pad button { padding:20px 6px; font-size:22px; }
+  #msg { font-size:14px; color:var(--quiet); min-height:1.2em; margin-top:8px; }
+  #toast { position:fixed; left:16px; right:16px; bottom:24px; padding:12px 14px; border-radius:10px;
+           background:var(--ink); color:var(--bg); font-size:15px; text-align:center;
+           opacity:0; transition:opacity .3s; pointer-events:none; }
+  #toast.show { opacity:.92; }
+</style>
+</head>
+<body>
+<h1>鸭子遥控</h1>
+
+<div class="card status">
+  <b>状态</b><span id="state" class="state">连接中…</span>
+  <b>动作</b><span id="action">-</span>
+  <b>结果</b><span id="result">-</span>
+  <b>电池</b><span id="battery">-</span>
+  <b>朝向</b><span id="heading">-</span>
+  <b>前方</b><span id="front">-</span>
+</div>
+
+<div class="card">
+  <div class="grid g2">
+    <button class="power" data-cmd='{"action":"power_on"}'>上力</button>
+    <button class="go" data-cmd='{"action":"start"}'>开始</button>
+    <button class="stop" data-cmd='{"action":"stop"}'>停下</button>
+    <button data-cmd='{"action":"pause"}'>暂停</button>
+  </div>
+  <p class="hint" id="hint"></p>
+  <div id="msg"></div>
+</div>
+
+<div class="card">
+  <p class="label">模型对比测试（26 秒：站 3 → 直走 8 → 边走右转 6 → 边走左转 6 → 站 3）</p>
+  <div class="grid g2" id="models"></div>
+  <p class="hint">换模型：先「暂停」或在支架上。然后上力 → 放地上 → 开始 → 点下面按钮。</p>
+  <div class="grid" style="margin-top:8px">
+    <button class="go" data-cmd='{"action":"abtest"}'>开始对比测试</button>
+  </div>
+  <div id="testprog" class="hint"></div>
+  <div id="tests" style="font-size:13px; margin-top:8px; overflow-x:auto"></div>
+</div>
+
+<div class="card">
+  <p class="label">按住走，松手停</p>
+  <div class="grid g3 pad">
+    <button data-drive="0.1,0.4">↖</button>
+    <button data-drive="0.1,0">↑</button>
+    <button data-drive="0.1,-0.4">↗</button>
+  </div>
+</div>
+
+<div class="card">
+  <p class="label">一键动作</p>
+  <div class="grid g2">
+    <button data-cmd='{"action":"posture","sit":true}'>蹲下</button>
+    <button data-cmd='{"action":"posture","sit":false}'>站起</button>
+    <button data-cmd='{"action":"walk","seconds":2}'>前进 2 秒</button>
+    <button data-cmd='{"action":"walk","seconds":5}'>前进 5 秒</button>
+    <button data-cmd='{"action":"turn","degrees":90}'>左转 90°</button>
+    <button data-cmd='{"action":"turn","degrees":-90}'>右转 90°</button>
+    <button data-cmd='{"action":"turn","degrees":45}'>左转 45°</button>
+    <button data-cmd='{"action":"turn","degrees":-45}'>右转 45°</button>
+  </div>
+</div>
+
+<div class="card">
+  <p class="label">头部（站着不动时）</p>
+  <div class="grid g3">
+    <button data-cmd='{"action":"head","pitch":0.2,"yaw":0}'>抬头</button>
+    <button data-cmd='{"action":"head","pitch":0,"yaw":0}'>回正</button>
+    <button data-cmd='{"action":"head","pitch":-0.15,"yaw":0}'>低头</button>
+    <button data-cmd='{"action":"head","pitch":0,"yaw":0.15}'>左看</button>
+    <span></span>
+    <button data-cmd='{"action":"head","pitch":0,"yaw":-0.15}'>右看</button>
+  </div>
+</div>
+
+<div class="card">
+  <div class="grid g3">
+    <button id="relax">卸力</button>
+    <button id="avoid" style="display:none">避障</button>
+    <button data-cmd='{"action":"save_log"}'>存数据</button>
+    <button class="stop" id="shutdown">关机</button>
+  </div>
+  <p class="hint">关机：鸭子先放到支架上。点关机后，等树莓派绿灯熄灭再关电源开关。</p>
+</div>
+
+<div id="toast"></div>
+<script>
+const STATE = { off: "待命（电机未上力）", paused: "已上力，站着不动", running: "运行中",
+                fallen: "已摔倒，电机已卸力", relaxed: "电机已卸力" };
+const HINT = { off: "鸭子放在支架上，点「上力」。",
+               relaxed: "鸭子放在支架上，点「上力」。",
+               paused: "把鸭子放到地上扶稳，点「开始」。",
+               running: "可以走了。随时点「停下」。",
+               fallen: "把鸭子放回支架，点「上力」，再放到地上点「开始」。" };
+const $ = id => document.getElementById(id);
+let toastTimer = null;
+function toast(text) {  // the status card is off-screen when the lower buttons are pressed
+  $("toast").textContent = text;
+  $("toast").classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => $("toast").classList.remove("show"), 2500);
+}
+
+async function send(cmd) {
+  try {
+    const r = await fetch("/cmd", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(cmd) });
+    const j = await r.json();
+    if (cmd.action !== "drive") {
+      $("msg").textContent = j.ok ? (j.message || "好") : ("不行：" + j.error);
+      toast(cmd.action === "save_log" && j.ok ? "数据已保存（最近 10 分钟）" : $("msg").textContent);
+    }
+    poll();
+    return j;
+  } catch (e) { $("msg").textContent = "连不上鸭子"; }
+}
+
+document.querySelectorAll("[data-cmd]").forEach(b =>
+  b.addEventListener("click", () => {
+    const c = JSON.parse(b.dataset.cmd);
+    if (c.action === "power_on") $("msg").textContent = "上力中，约 5 秒…";
+    send(c);
+  }));
+$("avoid").addEventListener("click", () => send({ action: "avoid", on: $("avoid").dataset.on === "1" }));
+$("relax").addEventListener("click", () => {  // limp servos drop the duck: stand first
+  if (confirm("鸭子已经放回支架上了吗？\n\n没放好请点「取消」，卸力后鸭子会直接瘫倒。"))
+    send({ action: "relax", on_stand: true });
+  else $("msg").textContent = "没有卸力：先把鸭子放回支架";
+});
+$("shutdown").addEventListener("click", () => {
+  if (confirm("确定关机吗？鸭子要先放在支架上。")) send({ action: "shutdown" });
+});
+
+// hold-to-drive: repeat every 200 ms while pressed; the server stops 0.5 s after the last one
+let timer = null;
+function release() {
+  if (!timer) return;
+  clearInterval(timer); timer = null;
+  document.querySelectorAll(".held").forEach(x => x.classList.remove("held"));
+  send({ action: "stop" });
+}
+document.querySelectorAll("[data-drive]").forEach(b => {
+  const [fwd, turn] = b.dataset.drive.split(",").map(Number);
+  b.addEventListener("pointerdown", e => {
+    e.preventDefault(); release();
+    b.classList.add("held");
+    send({ action: "drive", fwd, turn }).then(j => { if (j && !j.ok) $("msg").textContent = "不行：" + j.error; });
+    timer = setInterval(() => send({ action: "drive", fwd, turn }), 200);
+  });
+  ["pointerup", "pointercancel", "pointerleave"].forEach(ev => b.addEventListener(ev, release));
+  b.addEventListener("contextmenu", e => e.preventDefault());
+});
+document.addEventListener("visibilitychange", () => { if (document.hidden) release(); });
+
+async function poll() {
+  try {
+    const s = await (await fetch("/status")).json();
+    $("state").textContent = s.busy ? "上力中…" : (STATE[s.state] || s.state);
+    $("state").style.color = s.state === "fallen" ? "var(--stop)" : s.state === "running" ? "var(--go)" : "";
+    $("hint").textContent = s.busy ? "腿正在摆到初始姿态。" : (HINT[s.state] || "");
+    const a = s.action || {};
+    $("action").textContent = a.kind === "idle" || !a.kind ? "站立" :
+      a.kind === "walk" ? "前进" : a.kind === "test" ? "对比测试" : a.kind === "turn" ? (a.degrees > 0 ? "左转 " : "右转 ") + Math.abs(a.degrees) + "°" : "遥控中";
+    $("result").textContent = s.result || "-";
+    $("battery").textContent = s.battery_v ? s.battery_v.toFixed(1) + " V" + (s.battery_low ? "（电量低，该充电了）" : "") : "读取中…";
+    $("battery").style.color = s.battery_low ? "var(--stop)" : "";
+    $("heading").textContent = s.heading_deg + "°";
+    $("front").textContent = !s.has_us ? "没有超声波" :
+      (s.distance_cm == null ? "测不到" : s.distance_cm + " cm") + (!s.avoid ? "（避障关）" :
+        s.distance_cm != null && s.avoid_cm && s.distance_cm < s.avoid_cm[0] ? "（停车区）" :
+        s.distance_cm != null && s.avoid_cm && s.distance_cm < s.avoid_cm[1] ? "（减速区）" : "（避障开）");
+    $("avoid").textContent = s.avoid ? "关避障" : "开避障";
+    $("avoid").dataset.on = s.avoid ? "0" : "1";
+    $("avoid").style.display = s.has_us ? "" : "none";
+    renderModels(s);
+    $("testprog").textContent = s.test_elapsed != null ? `测试中：${s.test_elapsed} / 26 秒（${s.model}）` : "";
+    renderTests(s.tests || []);
+  } catch (e) { $("state").textContent = "连不上鸭子"; }
+}
+const MODEL_NAME = { BEST_WALK_ONNX_2: "1 官方", v6_robust_29M: "2 第6版 29M", v6_robust_44M: "3 第6版 44M",
+                     v5_real_160M: "4 第5版", ctrl_206M: "旧对照版",
+                     mj_od11_13000: "od11 主力", mj_sit2_1000: "蹲下站起（试验）", mj_od8_9999: "od8 最终", mj_od8_9000: "od8 9000（对照）", mj_od7_8000: "od7 备用" };
+let modelsKey = "";
+function renderModels(s) {
+  const key = s.models.join() + s.model;
+  if (key === modelsKey) return;
+  modelsKey = key;
+  $("models").innerHTML = "";
+  s.models.forEach(m => {
+    const b = document.createElement("button");
+    b.textContent = (m === s.model ? "✓ " : "") + (MODEL_NAME[m] || m);
+    if (m === s.model) b.className = "held";
+    b.onclick = () => send({ action: "model", name: m });
+    $("models").appendChild(b);
+  });
+}
+const PHASE = { "stand": "站", "straight": "直走", "straight 0.1": "直走", "walk + right -0.25": "右转", "walk + left +0.25": "左转" };
+let testsKey = "";
+function renderTests(tests) {
+  const key = JSON.stringify(tests);
+  if (key === testsKey) return;
+  testsKey = key;
+  $("tests").innerHTML = tests.slice().reverse().map(t => {
+    const ok = t.outcome === "completed";
+    const rows = t.rows.map(r => `<tr><td>${PHASE[r.phase] || r.phase}</td><td>${r.turned}°</td><td>${r.l_up}%</td><td>${r.r_up}%</td><td>${r.pitch_sd}</td></tr>`).join("");
+    return `<p style="margin:8px 0 4px"><b>${MODEL_NAME[t.model] || t.model}</b> ${t.time} · ` +
+      `<span style="color:${ok ? "var(--go)" : "var(--stop)"}">${ok ? "走完" : t.outcome.startsWith("fell") ? t.outcome.replace(/fell at ([\d.]+) s.*/, "$1 秒时摔倒") : "手动停止"}</span></p>` +
+      `<table style="border-collapse:collapse;width:100%"><tr style="color:var(--quiet)"><td>阶段</td><td>转了</td><td>左脚抬</td><td>右脚抬</td><td>晃动</td></tr>${rows}</table>`;
+  }).join("");
+}
+setInterval(poll, 1000); poll();
+</script>
+</body>
+</html>
