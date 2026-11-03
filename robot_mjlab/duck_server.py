@@ -65,12 +65,36 @@ TURN_RATE = 0.4           # rad/s actually sent while turning, same both ways (r
                           # left +0.6 turned 43 deg/s and the duck fell when it stopped)
 SETTLE_S = 0.5            # walk straight this long after a turn instead of braking at once
 DRIVE_DEADMAN_S = 0.5
+SIDE_MAX = 0.2            # m/s, drive side=; the Playground policies (ctrl_206M) were trained on +-0.2
 # Head: the policy never saw head commands in training and the Heima head is
 # heavy. A 0.4 rad head-up step tipped the duck over backwards in 2 s, so the
 # head moves slowly and only a little (up is the dangerous side: CoM goes back).
 HEAD_PITCH_LIMITS = (-0.15, 0.2)    # rad, + = up, - = down (user-checked); -0.4 (down) tipped it over
 HEAD_YAW_LIMIT = 0.15             # +0.35 (left) made it turn by itself and fall, twice
 HEAD_RATE = 0.12                    # rad/s
+HEAD_SCAN_YAW = 0.8                 # mj_ models standing still; walking stays at HEAD_YAW_LIMIT
+# Every forward walk starts with a look left, right and ahead (mj_ models with a sonar).
+SCAN_SEQ = ((0.6, "left"), (-0.6, "right"), (0.0, "front"))  # rad of head yaw; front last,
+SCAN_DWELL_S = 1.3        # the sonar reading is a ~1 s window, what came before leaks in
+SCAN_VALID_S = 10.0       # no second scan for a walk started this soon after one
+SCAN_BLOCK_M = 0.25       # user 11-03: it stopped ~40 cm short, too far
+# Look-ahead budget: a scan's front distance minus SCAN_MARGIN_M is how far forward
+# motion may go (dead reckoning on the command, which overstates the real speed, so it
+# errs short). Fresh sonar readings while walking straight move the end (more room
+# seen: walk on). The sonar often has no echo for 2-4 s while walking (soft or slanted
+# things, 11-03 logs), and no echo used to read as clear: a held forward button walked
+# into things. So it stops and looks again when the budget runs out, when a reading
+# under LIVE_RESCAN_M comes in well short of what the scan saw, or before walking
+# straight in a new direction.
+SCAN_MARGIN_M = 0.20
+SCAN_FAR_M = 1.5          # longest look-ahead trusted from one reading
+SCAN_BLIND_M = 0.8        # front scan without an echo: open, or something soft
+LIVE_RESCAN_M = 0.50
+SURPRISE_M = 0.15         # ...and that much closer than the scan said: a known wall is walked up to
+RESCAN_TURN_DEG = 45.0
+HEAD_SCAN_UP = 0.75                 # rad of nod, 0.5 each on neck and head with NECK_SHARE
+HEAD_ROLL_LIMIT = 0.25              # rad, tilting the head sideways
+HEAD_SCAN_RATE = 0.5                # rad/s
 NECK_SHARE = 0.7                    # of the pitch to neck_pitch and to head_pitch each
 LOW_V, CRITICAL_V = 7.2, 6.9
 # same phases as auto_test.py --test ab: (name, seconds, fwd, side, turn); turn sent
@@ -85,7 +109,12 @@ AB_PHASES = [
 # Models offered on the phone page (the other .onnx files stay on the Pi, unlisted).
 # mjlab policies (microduck_rl Open Duck task) are named mj_*; they get no yaw trim:
 # the trim compensated the Playground policies' drift, heading hold learns the rest.
-MODELS = ["mj_od11_13000", "mj_sit2_1000", "mj_od8_9999", "mj_od8_9000", "mj_od7_8000", "ctrl_206M"]
+MODELS = ["mj_od13_14999", "mj_od13_kp30", "mj_sit8_7000", "mj_sit6_6750", "ctrl_206M", "BEST_WALK_ONNX_2"]
+# Entries that reuse another model's file with their own leg kp (firmware P; head stays 8).
+# 11-03 sim: od13 (trained kp 15-26) at kp 30 backs up -0.115 vs -0.071 m/s, turns
+# +-24 vs +-19 deg/s, no fall; sit6 at kp 30 no longer squats, so the sit models keep 20.
+MODEL_FILE = {"mj_od13_kp30": "mj_od13_14999"}
+MODEL_KP = {"mj_od13_kp30": 30}
 # Measured on the floor 10-30: od8 at turn 0 veers right ~40 deg/s, about 95 deg/s
 # per rad/s of command. Cause not found yet, this only lets it walk straight.
 # The default heading-hold limit (0.4) would cut the trim off, so it goes up with it.
@@ -96,12 +125,15 @@ TRIMMED_HOLD_LIMIT = 0.8
 # +20 deg/s, evening +0.35 -> -4), so no fixed trim fits. The command is the wanted
 # yaw rate plus an integral of its error, kept between turns. Not in place: there
 # +0.2 does not turn at all and -0.6 stomps (4 g).
-TURN_LOOP_MODELS = {"mj_od11_13000"}
-TURN_LOOP_KI = 0.8        # 1/s
-TURN_LOOP_LIMIT = 0.5     # rad/s of correction
+TURN_LOOP_MODELS = {"mj_od11_13000", "mj_od13_14999", "mj_od13_kp30"}
+TURN_LOOP_KI = 1.5        # 1/s
+TURN_LOOP_LIMIT = 0.6     # rad/s of correction
+# One integral per direction, they differ a lot: left needed ~+0.45, right ~0 (10-31).
+# A shared one was dragged the wrong way by each turn: left 33 s at +0.41 gave 0 deg/s.
+TURN_I_START = {1: 0.45, -1: 0.0}
 YAW_RATE_TAU_S = 0.5      # low-pass over the ~3 Hz gait wobble
 PAUSE_SETTLE_S = 2.5  # a pause locks the legs where they are: mid-step it tips over
-MODELS = [m for m in MODELS if os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), m + ".onnx"))]
+MODELS = [m for m in MODELS if os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), MODEL_FILE.get(m, m) + ".onnx"))]
 # The BNO055 can drop off the bus at a hard landing and the stock reader then
 # hands out its last sample for ever: the policy walks blind and the fall guard
 # is dead, or worse: a last sample taken mid-stumble reads as a fall and the
@@ -112,10 +144,10 @@ IMU_FROZEN_S = 0.2
 # than this for OBSTACLE_HOLD_S (turning stays allowed, to turn away from it).
 # A sighting counts for OBSTACLE_LATCH_S: one missed or far reading must not let
 # a held up button walk on (floor test 10-27: a refresh got through at 10 cm).
-OBSTACLE_STOP_M = 0.10
+OBSTACLE_STOP_M = 0.15     # it needs ~0.7 s and 5-8 cm to stop (10-31 logs ended at 6-7 cm)
 OBSTACLE_HOLD_S = 0.2
 OBSTACLE_LATCH_S = 0.5
-OBSTACLE_CLEAR_M = 0.15   # after a stop, forward is allowed again only beyond this
+OBSTACLE_CLEAR_M = 0.20   # after a stop, forward is allowed again only beyond this
 # Slow-down zone before the stop line: forward speed falls linearly from full at
 # OBSTACLE_SLOW_M to OBSTACLE_SLOW_MIN of it at OBSTACLE_STOP_M. Our policies
 # barely step below ~0.1 m/s, so the low end mostly means marching in place.
@@ -177,14 +209,18 @@ class Server:
         self.action = {"kind": "idle"}
         self.result = "ready: duck on the stand, press power_on"
         self.action_id = 0
-        self.head = [0.0, 0.0]            # head pitch, head yaw targets
-        self.head_now = [0.0, 0.0]        # what is sent, ramped towards self.head
+        self.head = [0.0, 0.0, 0.0]       # head pitch, yaw, roll targets
+        self.head_now = [0.0, 0.0, 0.0]   # what is sent, ramped towards self.head
         self.battery_v = None
         self.low_count = 0
         self.pause_at = None              # time a pause asked for while walking takes effect
         self.yaw_rate = 0.0               # low-passed gyro z
         self.sit_flag = 0.0               # sit/stand models: 1 = squat
-        self.turn_i = 0.0                 # learned turn correction
+        self.scan_t = 0.0                 # when the last scan ended
+        self.budget_m = None              # forward metres the last scan saw free (None: no scan yet)
+        self.walked_m = 0.0               # commanded forward metres since that scan
+        self.scan_heading = 0.0
+        self.turn_i = dict(TURN_I_START)  # learned turn correction per direction
         self.last_moving = 0.0
         self.battery_request = False
         self.log = collections.deque(maxlen=int(600 / DT))  # last 10 minutes
@@ -252,8 +288,10 @@ class Server:
                 self._finish("paused")
                 return None
             cmd = self._action_command(now)
-            for k in (0, 1):
-                step = float(np.clip(self.head[k] - self.head_now[k], -HEAD_RATE * DT, HEAD_RATE * DT))
+            for k in (0, 1, 2):
+                mj = self.model.startswith("mj_")
+                rate = (HEAD_SCAN_RATE if k > 0 else 2 * HEAD_RATE) if mj else HEAD_RATE
+                step = float(np.clip(self.head[k] - self.head_now[k], -rate * DT, rate * DT))
                 self.head_now[k] += step
         if self._sit_model():  # the posture flag sits in the fwd slot, no heading hold
             self.rl.last_commands = [self.sit_flag] + [0.0] * 6
@@ -263,6 +301,8 @@ class Server:
         else:
             cmd[4] = self.head_now[0]
         cmd[5] = self.head_now[1]
+        if self.model.startswith("mj_"):
+            cmd[6] = self.head_now[2]
         trimmed = self.model in YAW_TRIM or self.model in TURN_LOOP_MODELS
         self.hold.limit = TRIMMED_HOLD_LIMIT if trimmed else self.hold_limit
         self.rl.last_commands = self.hold.command(cmd, self._yaw_trim(), True)
@@ -274,9 +314,16 @@ class Server:
         cmd = [0.0] * 7
         if self._obstacle_stop(now):
             return cmd
+        if a["kind"] == "scan":
+            self._scan_step(a, now)
+            return cmd
         if a["kind"] == "walk":
             if now >= a["until"]:
                 self._finish(a.get("done_msg", "done"))
+            elif a["speed"] > 0 and "done_msg" not in a and (why := self._rescan_reason(False)):
+                self.action = self._new_scan(now, then=(a["speed"], max(0.2, a["until"] - now)))
+                self.result = "looking again: " + why
+                return cmd
             else:
                 cmd[0] = a["speed"]
         elif a["kind"] == "turn":
@@ -310,11 +357,34 @@ class Server:
         elif a["kind"] == "drive":
             if now - a["last"] > DRIVE_DEADMAN_S:
                 self._finish("drive stopped (no update for 0.5 s)")
+            elif a["fwd"] > 0 and (why := self._rescan_reason(a["turn"] != 0)):
+                self.action = dict(self._new_scan(now, then=None), last=a["last"])  # the held button keeps it alive
+                self.result = "looking again: " + why
+                return cmd
             else:
-                cmd[0], cmd[2] = a["fwd"], self._turn_cmd(a["turn"], a["fwd"] != 0)
+                cmd[0], cmd[1], cmd[2] = a["fwd"], a.get("side", 0.0), self._turn_cmd(a["turn"], a["fwd"] != 0)
         if cmd[0] > 0 and a["kind"] in ("walk", "drive", "test") and a.get("turn", 0) == 0:
             cmd[0] *= self._slow_factor()
+        if cmd[0] > 0:
+            self.walked_m += cmd[0] * DT
         return cmd
+
+    def _rescan_reason(self, turning):
+        """Lock held, forward motion: why it should stop and look again, or None.
+        Also moves the end of the look-ahead budget with fresh readings."""
+        if self.budget_m is None or not self._sonar_on():  # no scan yet, or no sonar use
+            return None
+        if not turning and abs(np.degrees(self.hold.heading - self.scan_heading)) > RESCAN_TURN_DEG:
+            return "facing a new way"
+        d = self.us.nearest() if not turning else None  # two readings: one stray echo is not enough
+        if d is not None:
+            expected = self.budget_m + SCAN_MARGIN_M - self.walked_m  # where the scan put the thing ahead
+            if d < LIVE_RESCAN_M and d < expected - SURPRISE_M:
+                return f"something {d * 100:.0f} cm ahead"
+            self.budget_m = min(self.walked_m + d, self.walked_m + SCAN_FAR_M) - SCAN_MARGIN_M
+        if self.walked_m >= self.budget_m:
+            return f"walked the {self.walked_m:.1f} m it saw free"
+        return None
 
     def _slow_factor(self):
         """Forward speed scale in the slow-down zone (1 outside it)."""
@@ -340,11 +410,52 @@ class Server:
             self.obstacle_seen = None
         return self.obstacle_seen[1] if self.obstacle_seen is not None else None
 
+    def _sonar_on(self):
+        return self.us is not None and self.avoid and self.model.startswith("mj_")
+
+    def _needs_scan(self, now):
+        return self._sonar_on() and now - self.scan_t > SCAN_VALID_S
+
+    def _new_scan(self, now, then):
+        """then = (speed, seconds) of the walk to start, None for a held drive button."""
+        return {"kind": "scan", "phase": 0, "t": now, "last": now, "seen": {}, "then": then}
+
+    def _scan_step(self, a, now):
+        """Lock held."""
+        if a["then"] is None and now - a["last"] > DRIVE_DEADMAN_S:
+            self.head[1] = 0.0
+            self._finish("scan stopped (no update for 0.5 s)")
+            return
+        yaw, name = SCAN_SEQ[a["phase"]]
+        self.head[1] = yaw
+        if now - a["t"] < SCAN_DWELL_S:
+            return
+        a["seen"][name] = self.us.fresh()
+        a["phase"] += 1
+        a["t"] = now
+        if a["phase"] < len(SCAN_SEQ):
+            return
+        cm = {k: "none" if v is None else f"{v * 100:.0f}" for k, v in a["seen"].items()}
+        msg = f"scan left {cm['left']} front {cm['front']} right {cm['right']} cm"
+        front = a["seen"]["front"]
+        if front is not None and front < SCAN_BLOCK_M:
+            self._finish(msg + ": blocked ahead")
+            return
+        self.scan_t = now  # a blocked scan does not count: the next walk looks again
+        self.walked_m = 0.0
+        self.scan_heading = self.hold.heading
+        self.budget_m = (SCAN_BLIND_M if front is None else min(front, SCAN_FAR_M)) - SCAN_MARGIN_M
+        if a["then"] is None:
+            self._finish(msg)
+        else:
+            self.result = msg
+            self.action = {"kind": "walk", "speed": a["then"][0], "until": now + a["then"][1]}
+
     def _obstacle_stop(self, now):
         """Lock held. Ends forward motion (walk / drive / test) at an obstacle."""
         a = self.action
-        turning = a["kind"] == "drive" and a.get("turn", 0) != 0
-        d = None if a["kind"] not in ("walk", "drive", "test") or turning else self._obstacle_ahead()
+        in_place = a["kind"] == "drive" and a.get("fwd", 0) == 0  # turning away stays allowed
+        d = None if a["kind"] not in ("walk", "drive", "test", "turn") or in_place else self._obstacle_ahead()
         if d is None:
             self.obstacle_since = None
             return False
@@ -365,9 +476,10 @@ class Server:
         if want == 0:
             return 0.0
         if walking and self.model in TURN_LOOP_MODELS:
+            side = 1 if want > 0 else -1
             step = TURN_LOOP_KI * (want - self.yaw_rate) * DT
-            self.turn_i = float(np.clip(self.turn_i + step, -TURN_LOOP_LIMIT, TURN_LOOP_LIMIT))
-            return want - self._yaw_trim() + self.turn_i
+            self.turn_i[side] = float(np.clip(self.turn_i[side] + step, -TURN_LOOP_LIMIT, TURN_LOOP_LIMIT))
+            return want - self._yaw_trim() + self.turn_i[side]
         return want - self._yaw_trim()
 
     def _yaw_trim(self):
@@ -400,7 +512,9 @@ class Server:
             if self.state == "running" or self.busy:
                 return {"ok": False, "error": "press pause first"}
             if self.rl is not None and not self.args.fake:
-                self.rl.set_policy(os.path.join(SCRIPTS, name + ".onnx"))
+                self.rl.set_policy(os.path.join(SCRIPTS, MODEL_FILE.get(name, name) + ".onnx"))
+                with self.bus:  # the policy thread is paused or the servos are off
+                    self.rl.set_leg_kp(MODEL_KP.get(name, self.args.kp))
             self.model = name
         return self._ok(f"model {name}")
 
@@ -521,9 +635,12 @@ class Server:
                 self.state = "running"
                 self.pause_at = None
                 self.sit_flag = 0.0
+                self.scan_t, self.budget_m = 0.0, None  # it may have been carried: look before walking
                 self.rl.paused = False
                 return self._ok("started")
             if kind == "pause":
+                if self.action["kind"] == "scan":
+                    self.head[1] = 0.0
                 if self.action["kind"] == "test":
                     self._end_test("stopped by hand")
                 if self.state == "running" and time.time() - self.last_moving < PAUSE_SETTLE_S:
@@ -537,6 +654,8 @@ class Server:
                 self._finish("paused")
                 return self._ok("paused")
             if kind == "stop":
+                if self.action["kind"] == "scan":
+                    self.head[1] = 0.0
                 if self.action["kind"] == "test":
                     self._end_test("stopped by hand")
                 self._finish("stopped")
@@ -564,6 +683,9 @@ class Server:
                 self.test_steps = []
                 self.action = {"kind": "test", "t0": now, "phase": 0}
                 return self._ok(f"test started: {self.model}, {sum(p[1] for p in AB_PHASES)} s")
+            if kind in ("walk", "turn", "drive", "abtest"):  # the scan range is for standing still
+                self.head = [float(np.clip(self.head[0], *HEAD_PITCH_LIMITS)),
+                             float(np.clip(self.head[1], -HEAD_YAW_LIMIT, HEAD_YAW_LIMIT)), 0.0]
             if kind in ("walk", "drive", "abtest") and float(c.get("speed", c.get("fwd", 1))) > 0                     and float(c.get("turn", 0)) == 0 and self._obstacle_ahead() is not None:
                 return {"ok": False, "error": f"obstacle {self._obstacle_ahead() * 100:.0f} cm ahead"}
             if kind == "walk":
@@ -576,6 +698,9 @@ class Server:
                 else:
                     speed = float(np.clip(speed, *SPEED_RANGE))
                 sec = float(np.clip(sec, 0.2, MAX_WALK_S))
+                if speed > 0 and self._needs_scan(now):
+                    self.action = self._new_scan(now, then=(speed, sec))
+                    return self._ok("scanning, then walk")
                 self.action = {"kind": "walk", "speed": speed, "until": now + sec}
                 return self._ok(f"walk {speed:+.2f} m/s for {sec:.1f} s")
             if kind == "turn":
@@ -591,13 +716,24 @@ class Server:
                 if fwd > 0 and float(c.get("turn", 0)) == 0:  # page sends 0.1 for "up"
                     fwd = max(fwd, self._straight_speed())
                 turn = float(np.clip(float(c.get("turn", 0)), -TURN_RATE, TURN_RATE))
-                self.action = {"kind": "drive", "fwd": fwd, "turn": turn, "last": now}
+                side = float(np.clip(float(c.get("side", 0)), -SIDE_MAX, SIDE_MAX))  # + = left
+                if self.action["kind"] == "scan":
+                    self.action["last"] = now
+                    return {"ok": True, "id": self.action_id}
+                if fwd > 0 and self.action["kind"] != "drive" and not c.get("scanned") and self._needs_scan(now):
+                    self.action = self._new_scan(now, then=None)
+                    return self._ok("scanning, then walk")
+                self.action = {"kind": "drive", "fwd": fwd, "side": side, "turn": turn, "last": now}
                 return {"ok": True, "id": self.action_id}  # no new id per refresh
             if kind == "head":
                 if self.action["kind"] != "idle":
                     return {"ok": False, "error": "head moves only while standing still"}
-                self.head = [float(np.clip(float(c.get("pitch", 0)), *HEAD_PITCH_LIMITS)),
-                             float(np.clip(float(c.get("yaw", 0)), -HEAD_YAW_LIMIT, HEAD_YAW_LIMIT))]
+                mj = self.model.startswith("mj_")
+                yaw_limit = HEAD_SCAN_YAW if mj else HEAD_YAW_LIMIT
+                pitch_limits = (HEAD_PITCH_LIMITS[0], HEAD_SCAN_UP) if mj else HEAD_PITCH_LIMITS
+                self.head = [float(np.clip(float(c.get("pitch", 0)), *pitch_limits)),
+                             float(np.clip(float(c.get("yaw", 0)), -yaw_limit, yaw_limit)),
+                             float(np.clip(float(c.get("roll", 0)), -HEAD_ROLL_LIMIT, HEAD_ROLL_LIMIT)) if mj else 0.0]
                 return self._ok(f"head pitch {self.head[0]:+.2f} yaw {self.head[1]:+.2f}")
         return {"ok": False, "error": f"unknown action {kind!r}"}
 
@@ -621,11 +757,13 @@ class Server:
                 if self.rl is None:
                     rl = self.make_rl()  # RLWalk.__init__ does turn_on (low kp -> init pose -> kp)
                     if not self.args.fake and self.model != os.path.splitext(os.path.basename(self.args.onnx_model_path))[0]:
-                        rl.set_policy(os.path.join(SCRIPTS, self.model + ".onnx"))  # picked before power_on
+                        rl.set_policy(os.path.join(SCRIPTS, MODEL_FILE.get(self.model, self.model) + ".onnx"))  # picked before power_on
+                        rl.set_leg_kp(MODEL_KP.get(self.model, self.args.kp))
                     rl.paused = True
                     rl.last_commands = [0.0] * 7
                     get_obs = rl.get_obs
                     rl.get_obs = lambda: self._step(get_obs())
+                    rl.on_bus_error = self._bus_error
                     self.rl = rl
                     threading.Thread(target=rl.run, daemon=True).start()
                 else:
@@ -644,8 +782,8 @@ class Server:
             self.guard.reset()
             with self.lock:
                 self.state = "paused"
-                self.head = [0.0, 0.0]
-                self.head_now = [0.0, 0.0]
+                self.head = [0.0, 0.0, 0.0]
+                self.head_now = [0.0, 0.0, 0.0]
                 self._finish("legs in the init pose: put the duck on the floor, then start")
             return self._ok("powered on")
         except Exception as e:
@@ -654,6 +792,20 @@ class Server:
             return {"ok": False, "error": f"power on failed: {e}"}
         finally:
             self.busy = False
+
+    def _bus_error(self, err):
+        """Policy thread: the servo bus failed BUS_ERRORS_MAX steps in a row (it has paused)."""
+        self.rl.last_commands = [0.0] * 7
+        try:
+            self.rl.hwi.turn_off()
+        except BaseException as e:
+            print("[bus] turn_off:", e, flush=True)
+        with self.lock:
+            self.state = "relaxed"
+            if self.action["kind"] == "test":
+                self._end_test("servo bus error")
+            self._finish("servo bus error, servos released: put the duck on the stand and check the servo plugs")
+        print("[bus] gave up:", err, flush=True)
 
     def _relax(self):
         with self.lock:
@@ -665,7 +817,12 @@ class Server:
             self.rl.last_commands = [0.0] * 7
         with self.bus:
             if not self.args.fake:
-                self.rl.hwi.turn_off()
+                try:
+                    self.rl.hwi.turn_off()
+                except BaseException as e:  # a poisoned rustypot handle: reopen once
+                    print("[relax] turn_off:", e, "- reopening the bus", flush=True)
+                    self.rl.reopen_bus()
+                    self.rl.hwi.turn_off()
         with self.lock:
             self.state = "relaxed"
             self._finish("servos limp")
@@ -796,6 +953,7 @@ def main():
     ap.add_argument("--allow_backward", action="store_true")
     ap.add_argument("--token", default="", help="if set, POST needs header X-Duck-Token")
     ap.add_argument("--fake", action="store_true", help="no robot (logic test)")
+    ap.add_argument("--fake_us", type=float, help="with --fake: sonar reads this many metres")
     ap.add_argument("--no_us100", action="store_true", help="don't use the US-100 ultrasonic sensor")
     ap.add_argument("--fresh_imu", action="store_true", help="newest IMU sample instead of the stock 1-slot queue (fresh_imu.py)")
     args = ap.parse_args()
@@ -819,6 +977,9 @@ def main():
 
     signal.signal(signal.SIGTERM, on_term)
     us = None
+    if args.fake and args.fake_us:
+        us = type("FakeUs", (), {"distance_m": args.fake_us, "last_ok": 0.0, "fresh": lambda self: args.fake_us,
+                                 "nearest": lambda self, window_s=0.8: args.fake_us})()
     if not args.fake and not args.no_us100:
         try:
             from us100 import US100

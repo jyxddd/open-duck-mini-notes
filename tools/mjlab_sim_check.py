@@ -7,7 +7,9 @@ Run in WSL from ~/microduck_rl:
   .venv/bin/python /mnt/d/Claude/duck/tools/mjlab_sim_check.py --onnx mj_od1.onnx \
       --schedule "3:0,6:0.15,6:0.1:0:-0.4,6:0.1:0:0.4,3:0"
 
-schedule: "sec:fwd:side:turn[:neck:head_pitch:head_yaw:head_roll],..."
+schedule: "sec:fwd:side:turn[:neck:head_pitch:head_yaw:head_roll[:policy]],..."
+policy 1 runs --sit_onnx for that segment (fwd = sit flag), 0 the walk --onnx;
+last_action carries over the switch, as in Microduck's infer_policy.py.
 Prints per segment: body-frame speed, yaw rate, touch-downs/s, tilt; and
 whether / when it fell. --out saves a log in the walk_*.pkl format.
 """
@@ -33,6 +35,10 @@ STIFF_SOLIMP = (0.99, 0.9999, 0.001, 0.5, 2.0)
 DT, DECIM = 0.005, 4
 
 
+# tasks/openduck_sitstand_env_cfg.py SIT_TARGET_LIMITS
+SIT_LO, SIT_HI = TARGET_LO.copy(), TARGET_HI.copy()
+SIT_LO[2], SIT_HI[11], SIT_HI[3], SIT_HI[12] = -1.35, 1.35, 1.7, 1.7
+
 # robot/openduck_constants.py GROUND_MESHES
 GROUND_MESHES = ("trunk_bottom", "body_front", "body_back", "left_cache", "right_cache",
                  "left_knee_to_ankle_left_sheet", "left_knee_to_ankle_right_sheet",
@@ -44,7 +50,7 @@ def parse_schedule(text):
     out = []
     for part in text.split(","):
         v = [float(x) for x in part.split(":")]
-        out.append(v + [0.0] * (8 - len(v)))
+        out.append(v + [0.0] * (9 - len(v)))
     return out
 
 
@@ -142,6 +148,7 @@ def main():
     ap.add_argument("--vin", type=float, default=7.6)
     ap.add_argument("--out")
     ap.add_argument("--knee_range", type=float, help="widen the knee joint range to +-this (rad)")
+    ap.add_argument("--joint_stops", action="store_true", help="print stop/clip % per joint index")
     ap.add_argument("--clip", action="store_true", help="clip targets to TARGET_LO/HI (like the Pi)")
     ap.add_argument("--act_delay", type=int, default=0, help="extra control steps (20 ms) before a target reaches the servos")
     ap.add_argument("--imu_pitch_deg", type=float, default=0, help="IMU mounted tilted: + = reads nose-up (real duck: ~4)")
@@ -161,6 +168,7 @@ def main():
     ap.add_argument("--head_add", default="", help="extra mass on the head 'grams:forward_mm' (voice board)")
     ap.add_argument("--chest_add", default="", help="extra mass in the trunk 'grams:forward_mm' (speaker)")
     ap.add_argument("--ground", action="store_true", help="shins, trunk and head touch the floor (sit/stand models); fwd in the schedule = sit flag")
+    ap.add_argument("--sit_onnx", help="sit/stand model for segments with policy 1 (switch without a pause)")
     ap.add_argument("--hang", action="store_true", help="trunk held still in the air, as on the stand")
     ap.add_argument("--com_x", type=float, default=0.0, help="move the whole-robot CoM forward by this (mm, negative = back; upper body bodies shifted)")
     ap.add_argument("--imu_delay", type=int, default=0, help="control steps (20 ms) the policy's gyro/accel lag behind the body")
@@ -170,7 +178,7 @@ def main():
     ap.add_argument("--imu_yaw180", action="store_true", help="IMU turned 180 deg about z: gyro/accel x,y negated")
     a = ap.parse_args()
     json_path = f"{bam.__path__[0]}/params/feetech_sts3215_7_4V/m1.json"
-    m, d, ctrls = build(a.vin, json_path, a.knee_range, a.kp_legs, a.kp_head, a.backlash, a.hidden_play, a.flex, a.ground)
+    m, d, ctrls = build(a.vin, json_path, a.knee_range, a.kp_legs, a.kp_head, a.backlash, a.hidden_play, a.flex, a.ground or bool(a.sit_onnx))
     for spec_add, body in ((a.head_add, "head_assembly"), (a.chest_add, "trunk_base")):
         if spec_add:
             g, dx = (float(v) for v in spec_add.split(":"))
@@ -200,7 +208,8 @@ def main():
     imu_rot = np.array([[math.cos(tilt), 0, math.sin(tilt)], [0, 1, 0], [-math.sin(tilt), 0, math.cos(tilt)]])
     roll = math.radians(a.imu_roll_deg)
     imu_rot = np.array([[1, 0, 0], [0, math.cos(roll), math.sin(roll)], [0, -math.sin(roll), math.cos(roll)]]) @ imu_rot
-    sess = ort.InferenceSession(a.onnx, providers=["CPUExecutionProvider"])
+    walk_sess = ort.InferenceSession(a.onnx, providers=["CPUExecutionProvider"])
+    sit_sess = ort.InferenceSession(a.sit_onnx, providers=["CPUExecutionProvider"]) if a.sit_onnx else None
 
     jids = [m.actuator(i).trnid[0] for i in range(m.nu)]
     qadr, vadr = m.jnt_qposadr[jids], m.jnt_dofadr[jids]
@@ -229,10 +238,13 @@ def main():
     pending = [HOME.copy()] * a.act_delay
     lim_lo, lim_hi = m.jnt_range[jids].T
     n_ctrl = n_clip = n_stop = 0  # control steps / asking beyond the clip box / a joint on its stop
+    n_stop_j, n_clip_j = np.zeros(14), np.zeros(14)  # the same per joint
     steps, rows = [], []
     t, fell_at = 0.0, None
-    for seg, (sec, fwd, side, turn, *head) in enumerate(parse_schedule(a.schedule)):
+    for seg, (sec, fwd, side, turn, *head, pol) in enumerate(parse_schedule(a.schedule)):
         cmds = np.array([fwd, side, turn, *head])
+        ground = a.ground or (pol == 1 and sit_sess is not None)
+        sess = sit_sess if pol == 1 and sit_sess is not None else walk_sess
         prev_contact = None
         seg_rows = []
         for _ in range(int(round(sec / (DT * DECIM)))):
@@ -248,7 +260,7 @@ def main():
             grav = -acc / max(np.linalg.norm(acc), 1e-6)
             pos_rel = enc_q() + zerr - HOME
             vel = enc_v().copy()
-            if a.ground:  # the sit/stand task has gravity right after the gyro
+            if ground:  # the sit/stand task has gravity right after the gyro
                 obs = np.concatenate([gyro, grav, pos_rel, vel, last_action, cmds[:3], cmds[3:7], np.zeros(6)]).astype(np.float32)
             else:
                 obs = np.concatenate([gyro, pos_rel, vel, last_action, cmds[:3], grav, cmds[3:7], np.zeros(6)]).astype(np.float32)
@@ -263,9 +275,12 @@ def main():
             n_ctrl += 1
             n_clip += bool(np.any((target < TARGET_LO - 0.02) | (target > TARGET_HI + 0.02)))
             q = d.qpos[qadr]
-            n_stop += bool(np.any((q < lim_lo + 0.02) | (q > lim_hi - 0.02)))
+            on_stop = (q < lim_lo + 0.02) | (q > lim_hi - 0.02)
+            n_stop += bool(np.any(on_stop))
+            n_stop_j += on_stop
+            n_clip_j += (target < TARGET_LO - 0.02) | (target > TARGET_HI + 0.02)
             if a.clip:
-                target = np.clip(target, TARGET_LO, TARGET_HI)
+                target = np.clip(target, SIT_LO, SIT_HI) if ground else np.clip(target, TARGET_LO, TARGET_HI)
             target = target - zerr  # the servo holds what its encoder calls target
             if a.act_delay:
                 pending.append(target)
@@ -300,11 +315,11 @@ def main():
             legacy = np.concatenate([gyro, acc, np.r_[cmds, np.zeros(7 - len(cmds))], pos_rel, vel * 0.05,
                                      last_action, np.zeros(42), contact, np.zeros(2)])
             steps.append((t, legacy))
-            if fell_at is None and (tilt > 45 or (d.qpos[2] < 0.08 and not a.ground)):
+            if fell_at is None and (tilt > 45 or (d.qpos[2] < 0.08 and not ground)):
                 fell_at = t
                 break
         r = np.array(seg_rows)
-        if a.ground:
+        if ground:
             print(f"seg {seg} cmd {fwd:.0f}: root z start {r[0, 5]:.3f} end {r[-5:, 5].mean():.3f}, tilt end {r[-5:, 4].mean():.1f} max {r[:, 4].max():.1f}, drop speed max {np.abs(np.diff(r[:, 5])).max() / (DT * DECIM):.2f} m/s")
         skip = min(25, len(r) // 3)
         rr = r[skip:] if len(r) > skip + 5 else r
@@ -318,6 +333,10 @@ def main():
         print(f"{seg:3d} {fwd:7.2f} {side:5.2f} {turn:5.2f} | {vx:6.3f} {vy:6.3f} {wz:7.1f} {tps:7.2f} {tm:5.1f} {tx:5.1f}")
     print(f"fell at {fell_at:.1f} s" if fell_at else "no fall")
     print(f"beyond clip {100 * n_clip / max(n_ctrl, 1):.0f}% of steps, joint on its stop {100 * n_stop / max(n_ctrl, 1):.0f}%")
+    if a.joint_stops:
+        print("per joint % (stop/clip):", " ".join(
+            f"{j}:{100 * s / max(n_ctrl, 1):.0f}/{100 * c / max(n_ctrl, 1):.0f}"
+            for j, (s, c) in enumerate(zip(n_stop_j, n_clip_j)) if s or c))
     legs = np.array(action_steps)[100:][:, [0, 1, 2, 3, 4, 9, 10, 11, 12, 13]]
     print(f"action step rms {math.sqrt((legs ** 2).mean()):.2f} deg (legs, after the first 2 s)")
     if a.out:

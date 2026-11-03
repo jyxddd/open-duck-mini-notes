@@ -214,7 +214,8 @@ async function poll() {
 }
 const MODEL_NAME = { BEST_WALK_ONNX_2: "1 官方", v6_robust_29M: "2 第6版 29M", v6_robust_44M: "3 第6版 44M",
                      v5_real_160M: "4 第5版", ctrl_206M: "旧对照版",
-                     mj_od11_13000: "od11 主力", mj_sit2_1000: "蹲下站起（试验）", mj_od8_9999: "od8 最终", mj_od8_9000: "od8 9000（对照）", mj_od7_8000: "od7 备用" };
+                     mj_od11_13000: "od11 主力", mj_od13_14999: "od13 走路", mj_od13_kp30: "od13 加硬 kp30（测试）",
+                     mj_sit8_7000: "蹲下站起 sit8", mj_sit6_6750: "蹲下站起 sit6（备用）", mj_sit3_5000: "蹲下站起 sit3", mj_sit2_1000: "蹲下站起 旧", mj_od8_9999: "od8 最终", mj_od8_9000: "od8 9000（对照）", mj_od7_8000: "od7 备用" };
 let modelsKey = "";
 function renderModels(s) {
   const key = s.models.join() + s.model;

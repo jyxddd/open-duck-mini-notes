@@ -22,6 +22,7 @@ the gyro, and cmd[0] is the sit flag (0 stand, 1 squat):
 get_obs() always returns the 101-D layout, so duck_server's fall guard,
 heading hold, logs and tools/analyze_walk.py work for both kinds.
 """
+import json
 import os
 import time
 
@@ -32,6 +33,7 @@ from mini_bdx_runtime.rl_utils import make_action_dict
 from v2_rl_walk_mujoco import RLWalk
 
 PLAYGROUND_ACTION_SCALE = 0.25
+TRIM_FILE = os.path.expanduser("~/joint_trim.json")
 # mjlab position targets are clipped exactly like training (od3+:
 # openduck_constants.JOINT_TARGET_LIMITS, a box around HOME clear of every
 # joint stop). od1 had no clip and pressed the sim's knee stop with +2..+10 rad
@@ -40,12 +42,37 @@ TARGET_LO = np.array([-0.35, -0.3, -1.1, 0.6, -1.45, -0.3, -0.7, -1.2, -0.4,
                       -0.35, -0.3, -0.3, 0.6, -1.45])
 TARGET_HI = np.array([0.35, 0.3, 0.3, 1.75, 0.3, 1.0, 0.7, 1.2, 0.4,
                       0.35, 0.3, 1.1, 1.75, 0.3])
+# Sit/stand policies squat deeper (openduck_sitstand_env_cfg.SIT_TARGET_LIMITS).
+SIT_TARGET_LO = TARGET_LO.copy()
+SIT_TARGET_HI = TARGET_HI.copy()
+SIT_TARGET_LO[2], SIT_TARGET_HI[11] = -1.35, 1.35  # hip pitch
+SIT_TARGET_HI[3], SIT_TARGET_HI[12] = 1.7, 1.7  # knees, the real stop is +1.75
+SERVO_PORT = "/dev/ttyACM0"
+# 11-02: one garbled reply killed the policy thread mid-walk and left the servos stiff.
+# Now a failed step is skipped (the servos hold the last target for 20 ms) and the
+# handle reopened; this many in a row pauses and calls on_bus_error.
+BUS_ERRORS_MAX = 3
+LEG_JOINTS = [0, 1, 2, 3, 4, 9, 10, 11, 12, 13]  # hwi.joints order, the head is 5-8
+
+
+def load_joint_trim():
+    """Software zero offsets in rad from ~/joint_trim.json, {"13": -3} in degrees by joint
+    index: read as pos + trim, sent as target - trim. Read when a model is chosen."""
+    trim = np.zeros(14)
+    try:
+        with open(TRIM_FILE) as f:
+            for k, v in json.load(f).items():
+                trim[int(k)] = np.radians(float(v))
+    except (OSError, ValueError):
+        pass
+    return trim
 
 
 class DuckWalk(RLWalk):
     def __init__(self, onnx_model_path, **kwargs):
         super().__init__(onnx_model_path, **kwargs)
         self.policy_obs = None
+        self.on_bus_error = None  # duck_server: release the servos and say so
         self.set_policy(onnx_model_path)
 
     def set_policy(self, onnx_model_path):
@@ -53,6 +80,7 @@ class DuckWalk(RLWalk):
         dim = policy.ort_session.get_inputs()[0].shape[-1]
         self.mjlab = dim == 61
         self.sit_policy = "sit" in os.path.basename(onnx_model_path)
+        self.joint_trim = load_joint_trim()
         self.last_action = np.zeros(self.num_dofs)
         self.last_last_action = np.zeros(self.num_dofs)
         self.last_last_last_action = np.zeros(self.num_dofs)
@@ -73,7 +101,7 @@ class DuckWalk(RLWalk):
         n = np.linalg.norm(acc)
         gravity = -acc / n if n > 0.1 else np.array([0.0, 0.0, -1.0])
         cmds = np.asarray(self.last_commands, dtype=np.float64)
-        pos_rel = dof_pos - self.init_pos
+        pos_rel = dof_pos + self.joint_trim - self.init_pos
         if self.sit_policy:
             parts = [gyro, gravity, pos_rel, dof_vel, self.last_action, cmds[0:3], cmds[3:7], np.zeros(6)]
         else:
@@ -93,7 +121,8 @@ class DuckWalk(RLWalk):
             if self.policy_obs is None:
                 return
             action = np.asarray(self.policy.infer(self.policy_obs), dtype=np.float64)
-            targets = np.clip(np.asarray(self.init_pos) + action, TARGET_LO, TARGET_HI)
+            lo, hi = (SIT_TARGET_LO, SIT_TARGET_HI) if self.sit_policy else (TARGET_LO, TARGET_HI)
+            targets = np.clip(np.asarray(self.init_pos) + action, lo, hi)
         else:
             self.imitation_i = (self.imitation_i + 1) % self.PRM.nb_steps_in_period
             ph = self.imitation_i / self.PRM.nb_steps_in_period * 2 * np.pi
@@ -106,14 +135,50 @@ class DuckWalk(RLWalk):
         self.last_action = action.copy()
         self.motor_targets = targets
         self.prev_motor_targets = targets.copy()
-        self.hwi.set_position_all(make_action_dict(targets, list(self.hwi.joints.keys())))
+        sent = targets - self.joint_trim if self.mjlab else targets
+        self.hwi.set_position_all(make_action_dict(sent, list(self.hwi.joints.keys())))
+
+    def set_leg_kp(self, kp):
+        """Firmware P of the 10 leg servos (the head keeps its own). hwi.turn_on reuses
+        hwi.kps, so it also holds after a relax and power_on."""
+        kps = np.array(self.hwi.kps, dtype=float)
+        kps[LEG_JOINTS] = kp
+        self.hwi.set_kps(list(kps))
+
+    def reopen_bus(self):
+        """A garbled servo reply makes rustypot panic and poisons its handle (every later
+        call panics too): drop it so the port closes, then open a fresh one."""
+        import gc
+
+        import rustypot
+
+        self.hwi.io = None
+        gc.collect()
+        self.hwi.io = rustypot.feetech(SERVO_PORT, 1000000)  # gains stay in the servos
 
     def run(self):
         dt = 1 / self.control_freq
+        errors = 0
         while True:
             t = time.time()
             if self.paused:
                 time.sleep(0.1)
                 continue
-            self._step()
+            try:
+                self._step()
+                errors = 0
+            except (KeyboardInterrupt, SystemExit):
+                raise
+            except BaseException as e:  # pyo3 PanicException is not an Exception
+                errors += 1
+                print(f"[bus] step failed ({errors}): {e}", flush=True)
+                try:
+                    self.reopen_bus()
+                except BaseException as e2:
+                    print("[bus] reopen failed:", e2, flush=True)
+                if errors >= BUS_ERRORS_MAX:
+                    self.paused = True
+                    errors = 0
+                    if self.on_bus_error is not None:
+                        self.on_bus_error(str(e))
             time.sleep(max(0.0, dt - (time.time() - t)))

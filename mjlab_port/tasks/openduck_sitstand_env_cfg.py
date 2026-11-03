@@ -28,8 +28,13 @@ from mjlab_microduck.tasks.openduck_velocity_env_cfg import (
 )
 
 SIT_ACTION_RATE_SCALE = 2 * ACTION_RATE_SCALE
-SIT_Z, STAND_Z = 0.137, 0.162  # root z settled in the sim, full model
-SIT_OVERRIDES = {2: -0.95, 3: 1.75, 4: -0.8, 11: 0.95, 12: 1.75, 13: -0.8}
+FOOT_FRICTION = (0.3, 2.0)  # sit8: PLA soles on wood ~0.3; on the rubber mat it would not squat twice
+SIT_Z, STAND_Z = 0.128, 0.162  # root z settled in the sim, full model
+# sit6: the real knee stops at +1.75 rad (bent by hand, HOME is +1.37), so 1.65 keeps
+# ~6 deg clear. Ramps to HOME and back in the sim, tilt 7 deg, 0.87 N.m, drops 3.4 cm.
+SIT_OVERRIDES = {2: -1.3, 3: 1.65, 4: -0.4, 11: 1.3, 12: 1.65, 13: -0.4}
+# Same numbers in pi/mjlab_walk.py
+SIT_TARGET_LIMITS = {**JOINT_TARGET_LIMITS, "left_hip_pitch": (-1.35, 0.3), "right_hip_pitch": (-0.3, 1.35), r".*_knee": (0.6, 1.7)}
 MODULE_OVERRIDES = {
     "MICRODUCK_STANDUP_ROBOT_CFG": OPENDUCK_GROUND_ROBOT_CFG,
     "SITTING_TARGET_OVERRIDES": SIT_OVERRIDES,
@@ -50,10 +55,11 @@ def make_openduck_sitstand_env_cfg(play: bool = False, rough: bool = False):
         for k, v in saved.items():
             setattr(ss, k, v)
 
-    cfg.actions["joint_pos"].clip = dict(JOINT_TARGET_LIMITS)
+    cfg.actions["joint_pos"].clip = dict(SIT_TARGET_LIMITS)
     cfg.rewards["target_clip_excess"] = RewardTermCfg(func=target_clip_excess, weight=-1.0)
     cfg.rewards["rise_bootstrap"].params["max_height"] = STAND_Z + 0.01
 
+    cfg.events["foot_friction"].params["ranges"] = FOOT_FRICTION
     cfg.events["randomize_head_com"].params["asset_cfg"] = SceneEntityCfg("robot", body_names=HEAD_BODY_NAMES)
     cfg.events["reset_base"].params["pose_range"]["z"] = (STAND_Z, STAND_Z + 0.01)
     p = cfg.events["set_ground_state"].params
