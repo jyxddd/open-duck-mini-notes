@@ -49,7 +49,7 @@
 | Speaker + voice board + mount | 58 g |
 | Total | 101 g |
 
-58 g at the very front moves the whole-robot CoM about 1.9 mm forward. The new head cover fitted at the same time is 53 g lighter, about 1.4 mm back; together about 0.5 mm forward, which helps walking (in simulation, falls only happened with the CoM further back). A model was later retrained with the real masses (od27).
+58 g at the very front moves the whole-robot CoM about 1.9 mm forward. The new head cover fitted at the same time weighs under 80 g, about 170 g less than the old Heima top + bottom cover with bearing (247 g); together the model gets about 110 g lighter with the CoM about 1.3 mm forward, which helps walking (in simulation, falls only happened with the CoM further back). A model was later retrained with the real masses (od27).
 
 ## Firmware
 
