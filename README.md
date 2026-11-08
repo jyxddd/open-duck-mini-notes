@@ -14,7 +14,7 @@
 
 **超声波避障：[docs/超声波避障记录.md](docs/超声波避障记录.md)**
 
-**横移 / 后退步态训练：[docs/横移后退步态训练记录.md](docs/横移后退步态训练记录.md)**
+**横移 / 后退步态训练：[docs/横移后退步态训练记录.md](docs/横移后退步态训练记录.md)｜Side-step / backward gait training (English): [docs/side_step_backward_gait_training.md](docs/side_step_backward_gait_training.md)**
 
 ## 最重要的三个发现
 
