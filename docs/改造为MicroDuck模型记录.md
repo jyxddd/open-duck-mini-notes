@@ -1,5 +1,7 @@
 # 把 Open Duck Mini v2 改用 Microduck 训练方法的记录
 
+[English version](microduck_training_port.md)
+
 这份记录写的是：把 2.1 kg 的 Open Duck Mini v2，从官方 Playground 模型换成 [microduck_rl](https://github.com/pollen-robotics/microduck_rl)（mjlab + MuJoCo Warp + BAM 舵机模型）的训练方法，途中遇到的全部问题和解决办法。
 
 硬件：树莓派 Zero 2W，14 个 STS3215，独立 BNO055，US-100 超声波，2S 4000 mAh 电池。

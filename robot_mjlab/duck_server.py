@@ -74,8 +74,18 @@ HEAD_YAW_LIMIT = 0.15             # +0.35 (left) made it turn by itself and fall
 HEAD_RATE = 0.12                    # rad/s
 HEAD_SCAN_YAW = 0.8                 # mj_ models standing still; walking stays at HEAD_YAW_LIMIT
 # Every forward walk starts with a look left, right and ahead (mj_ models with a sonar).
-SCAN_SEQ = ((0.6, "left"), (-0.6, "right"), (0.0, "front"))  # rad of head yaw; front last,
+# (head yaw rad, name, head pitch rad); front last. 11-07 user: also look 30 deg DOWN for low things.
+# The nod is split 0.7 / 0.7 on neck_pitch and head_pitch, so -0.374 = -30 deg at the sensor
+# (inside the trained head range 0.3 / 0.5; sim od17 + new head: 8/8 no fall, tilt lower).
 SCAN_DWELL_S = 1.3        # the sonar reading is a ~1 s window, what came before leaks in
+SCAN_DOWN_PITCH = 0.374
+# The nod moves at 2 x HEAD_RATE = 0.24 rad/s: 1.6 s down and 1.6 s back up, so those two
+# looks dwell longer (the sonar window is ~1 s). Down first, front still last (freshest).
+SCAN_SEQ = ((0.0, "down", -SCAN_DOWN_PITCH, 2.8), (0.6, "left", 0.0, 2.4), (-0.6, "right", 0.0, SCAN_DWELL_S),
+            (0.0, "front", 0.0, SCAN_DWELL_S))
+# Looking down the floor itself echoes at ~0.5-0.75 m (sensor ~0.37 m up, beam +-15 deg); a closer
+# echo = something low ahead. First guess, to be set from a real floor reading with nothing ahead.
+SCAN_DOWN_BLOCK_M = 0.40
 SCAN_VALID_S = 10.0       # no second scan for a walk started this soon after one
 SCAN_BLOCK_M = 0.25       # user 11-03: it stopped ~40 cm short, too far
 # Look-ahead budget: a scan's front distance minus SCAN_MARGIN_M is how far forward
@@ -109,12 +119,34 @@ AB_PHASES = [
 # Models offered on the phone page (the other .onnx files stay on the Pi, unlisted).
 # mjlab policies (microduck_rl Open Duck task) are named mj_*; they get no yaw trim:
 # the trim compensated the Playground policies' drift, heading hold learns the rest.
-MODELS = ["mj_od13_14999", "mj_od13_kp30", "mj_sit8_7000", "mj_sit6_6750", "ctrl_206M", "BEST_WALK_ONNX_2"]
+# 11-04: trimmed to four on request (the page list had grown to 12); the first one is
+# selected at start-up. Old entries (sit8 combo, kp30, od18, sit-only, ctrl_206M,
+# BEST_WALK_ONNX_2) stay in COMBOS / MODEL_KP and on the Pi, add them back here to test.
+# od25 + sit14 (11-07): first real test. od25 sim: side steps ~0.1 m/s, 0/338 falls with the CoM at
+# or ahead of the measured one; sit14 12250 squats 3x with 9/12 no fall (knees x1.0). od17 stays default.
+MODELS = ["mj_od17_sit10", "mj_od17_16750", "mj_od25_sit14", "mj_od25_20500", "mj_od13_sit10", "mj_od13_14999"]
+# Walk + squat: the server swaps between the two policies. Squat: stop, stand
+# SWAP_STAND_S, then the squat policy. Standing up (or a move) hands back after
+# STAND_UP_S. Sim 11-03 (mjlab_sim_check --sit_onnx): 2 s standing then the swap
+# squatted 4/4, swapping as soon as it stopped fell 1/4. Both run at kp 20.
+# sit10 (random leg stance at reset): the floor combo fell on sit8 from the staggered stance
+# the walk stops in; the sim combo does not reproduce that (sit8 and sit10 both 6/6).
+# od17 + sit10 (11-04 evening): on the slippery floor od13 veered right 10-22 deg/s with the
+# heading loop saturated; od17 walked straight with half the correction and turned both ways.
+COMBOS = {"mj_od25_sit14": ("mj_od25_20500", "mj_sit14_12250"), "mj_od17_sit10": ("mj_od17_16750", "mj_sit10_8750"), "mj_od13_sit10":("mj_od13_14999", "mj_sit10_8750"), "mj_od13_sit8": ("mj_od13_14999", "mj_sit8_7000")}
+SWAP_STAND_S = 2.0
+STAND_UP_S = 3.0  # sit8 is up in ~0.3 s, the rest lets it settle
+# Floor 11-03: squatting the moment sit8 took over bounced for 5 s, then fell 1.5 s in
+# (yaw up to 268 deg/s). Alone, sit8 always stood on its own policy before a squat.
+SIT_SETTLE_S = 1.5
 # Entries that reuse another model's file with their own leg kp (firmware P; head stays 8).
 # 11-03 sim: od13 (trained kp 15-26) at kp 30 backs up -0.115 vs -0.071 m/s, turns
 # +-24 vs +-19 deg/s, no fall; sit6 at kp 30 no longer squats, so the sit models keep 20.
 MODEL_FILE = {"mj_od13_kp30": "mj_od13_14999"}
-MODEL_KP = {"mj_od13_kp30": 30}
+# od18 was trained at kp 30 (KP_RANGE spans 22-39). Sim 11-03, kp 30 floor: fwd 0.17,
+# back -0.06, turn -20/+17 deg/s, no fall; 15750 kept off the knee stops (2%), the later
+# 16250/16750 sat on them 15-60% (16750 at kp 25 on 0.35 friction stopped stepping).
+MODEL_KP = {"mj_od13_kp30": 30, "mj_od18_15750": 30}
 # Measured on the floor 10-30: od8 at turn 0 veers right ~40 deg/s, about 95 deg/s
 # per rad/s of command. Cause not found yet, this only lets it walk straight.
 # The default heading-hold limit (0.4) would cut the trim off, so it goes up with it.
@@ -125,15 +157,27 @@ TRIMMED_HOLD_LIMIT = 0.8
 # +20 deg/s, evening +0.35 -> -4), so no fixed trim fits. The command is the wanted
 # yaw rate plus an integral of its error, kept between turns. Not in place: there
 # +0.2 does not turn at all and -0.6 stomps (4 g).
-TURN_LOOP_MODELS = {"mj_od11_13000", "mj_od13_14999", "mj_od13_kp30"}
+TURN_LOOP_MODELS = {"mj_od11_13000", "mj_od13_14999", "mj_od13_kp30", "mj_od17_16750", "mj_od18_15750", "mj_od25_20500"}
 TURN_LOOP_KI = 1.5        # 1/s
 TURN_LOOP_LIMIT = 0.6     # rad/s of correction
+# Floor 11-03: both falls while walking a turn came with the loop's command at 0.85-1.0
+# (od17 left, start +0.45; od13 right, wound up to -0.86): want + correction stays under this.
+TURN_CMD_MAX = 0.6
 # One integral per direction, they differ a lot: left needed ~+0.45, right ~0 (10-31).
 # A shared one was dragged the wrong way by each turn: left 33 s at +0.41 gave 0 deg/s.
 TURN_I_START = {1: 0.45, -1: 0.0}
+# od17 turns by itself (trained on slippery feet): with +0.45 the left turn got 0.85-1.0
+# for 0.4 wanted and it fell after 130 deg (floor 11-03).
+# od18: not on the floor yet, the loop starts from 0 and winds up within the cap.
+TURN_I_START_MODEL = {"mj_od25_20500": {1: 0.0, -1: 0.0}, "mj_od17_16750": {1: 0.0, -1: 0.0}, "mj_od18_15750": {1: 0.0, -1: 0.0}}
 YAW_RATE_TAU_S = 0.5      # low-pass over the ~3 Hz gait wobble
 PAUSE_SETTLE_S = 2.5  # a pause locks the legs where they are: mid-step it tips over
-MODELS = [m for m in MODELS if os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), MODEL_FILE.get(m, m) + ".onnx"))]
+def policy_path(name):
+    return os.path.join(SCRIPTS, MODEL_FILE.get(name, name) + ".onnx")
+
+
+MODELS = [m for m in MODELS if all(os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), MODEL_FILE.get(p, p) + ".onnx"))
+                                   for p in COMBOS.get(m, (m,)))]
 # The BNO055 can drop off the bus at a hard landing and the stock reader then
 # hands out its last sample for ever: the policy walks blind and the fall guard
 # is dead, or worse: a last sample taken mid-stumble reads as a fall and the
@@ -218,9 +262,10 @@ class Server:
         self.sit_flag = 0.0               # sit/stand models: 1 = squat
         self.scan_t = 0.0                 # when the last scan ended
         self.budget_m = None              # forward metres the last scan saw free (None: no scan yet)
+        self.budget_seen = False          # that budget came from a real front echo (not the blind guess)
         self.walked_m = 0.0               # commanded forward metres since that scan
         self.scan_heading = 0.0
-        self.turn_i = dict(TURN_I_START)  # learned turn correction per direction
+        self.turn_i = {}                  # policy -> learned turn correction per direction
         self.last_moving = 0.0
         self.battery_request = False
         self.log = collections.deque(maxlen=int(600 / DT))  # last 10 minutes
@@ -228,8 +273,12 @@ class Server:
         self.tilt = 0.0
         self.imu_last, self.imu_same = None, 0
         self.model = os.path.splitext(os.path.basename(args.onnx_model_path))[0]
-        if self.model not in MODELS:  # the start-up model is always selectable
-            MODELS.append(self.model)
+        if self.model not in MODELS and MODELS:  # start on the first listed model; power_on
+            self.model = MODELS[0]                # loads it over the start-up file
+        self.policy = COMBOS.get(self.model, (self.model,))[0]  # the one running: a COMBOS part, else the model
+        self.swap = None                  # {"to": policy, "at": t} pending in a combo
+        self.squat_at = None              # combo: squat once sit8 has stood until then
+        self.loaded = {}                  # policy -> rl.load_policy(...), for the swap
         self.test_steps = []              # [(t, obs, phase)] of the running abtest
         self.tests = []                   # finished abtest results, newest last
 
@@ -288,6 +337,9 @@ class Server:
                 self._finish("paused")
                 return None
             cmd = self._action_command(now)
+            self._swap_step(now)
+            if self.squat_at is not None and now >= self.squat_at:
+                self.sit_flag, self.squat_at = 1.0, None
             for k in (0, 1, 2):
                 mj = self.model.startswith("mj_")
                 rate = (HEAD_SCAN_RATE if k > 0 else 2 * HEAD_RATE) if mj else HEAD_RATE
@@ -303,7 +355,7 @@ class Server:
         cmd[5] = self.head_now[1]
         if self.model.startswith("mj_"):
             cmd[6] = self.head_now[2]
-        trimmed = self.model in YAW_TRIM or self.model in TURN_LOOP_MODELS
+        trimmed = self.policy in YAW_TRIM or self.policy in TURN_LOOP_MODELS
         self.hold.limit = TRIMMED_HOLD_LIMIT if trimmed else self.hold_limit
         self.rl.last_commands = self.hold.command(cmd, self._yaw_trim(), True)
         return obs
@@ -312,6 +364,8 @@ class Server:
         """Turn the current action into [fwd, side, turn, ...] (lock held)."""
         a = self.action
         cmd = [0.0] * 7
+        if a["kind"] != "scan" and self.head[0] <= -SCAN_DOWN_PITCH + 1e-6:
+            self.head[0] = 0.0  # 11-07: a scan cut short by another command left the head looking down
         if self._obstacle_stop(now):
             return cmd
         if a["kind"] == "scan":
@@ -323,6 +377,7 @@ class Server:
             elif a["speed"] > 0 and "done_msg" not in a and (why := self._rescan_reason(False)):
                 self.action = self._new_scan(now, then=(a["speed"], max(0.2, a["until"] - now)))
                 self.result = "looking again: " + why
+                print(f"[result] {self.result}", flush=True)
                 return cmd
             else:
                 cmd[0] = a["speed"]
@@ -413,6 +468,9 @@ class Server:
     def _sonar_on(self):
         return self.us is not None and self.avoid and self.model.startswith("mj_")
 
+    def _us_silent(self):
+        return self.us is not None and hasattr(self.us, "silent") and self.us.silent()
+
     def _needs_scan(self, now):
         return self._sonar_on() and now - self.scan_t > SCAN_VALID_S
 
@@ -426,9 +484,10 @@ class Server:
             self.head[1] = 0.0
             self._finish("scan stopped (no update for 0.5 s)")
             return
-        yaw, name = SCAN_SEQ[a["phase"]]
+        yaw, name, pitch, dwell = SCAN_SEQ[a["phase"]]
         self.head[1] = yaw
-        if now - a["t"] < SCAN_DWELL_S:
+        self.head[0] = pitch
+        if now - a["t"] < dwell:
             return
         a["seen"][name] = self.us.fresh()
         a["phase"] += 1
@@ -436,20 +495,40 @@ class Server:
         if a["phase"] < len(SCAN_SEQ):
             return
         cm = {k: "none" if v is None else f"{v * 100:.0f}" for k, v in a["seen"].items()}
-        msg = f"scan left {cm['left']} front {cm['front']} right {cm['right']} cm"
+        self.head[0] = 0.0
+        msg = f"scan left {cm['left']} front {cm['front']} right {cm['right']} down {cm['down']} cm"
         front = a["seen"]["front"]
+        if self._us_silent():
+            # 11-04 floor: the US-100 did not answer for ~100 s; the expected-distance guess
+            # below then said "blocked" on every walk press, so the duck only looked around.
+            self._finish("超声波没有回应，没走：检查超声波接线，或关避障再走")
+            return
+        if front is None and self.budget_m is not None and self.budget_seen and \
+                abs(np.degrees(self.hold.heading - self.scan_heading)) <= RESCAN_TURN_DEG:
+            # 11-03 floor: walked up to the wall on the budget, then the front look got no
+            # echo and the 0.8 m blind guess walked it on. Keep what it expected ahead.
+            front = max(0.0, self.budget_m + SCAN_MARGIN_M - self.walked_m)
+            msg += f" (expected {front * 100:.0f})"
         if front is not None and front < SCAN_BLOCK_M:
             self._finish(msg + ": blocked ahead")
+            return
+        down = a["seen"].get("down")
+        if down is not None and down < SCAN_DOWN_BLOCK_M:
+            self._finish(msg + ": something low ahead")
             return
         self.scan_t = now  # a blocked scan does not count: the next walk looks again
         self.walked_m = 0.0
         self.scan_heading = self.hold.heading
         self.budget_m = (SCAN_BLIND_M if front is None else min(front, SCAN_FAR_M)) - SCAN_MARGIN_M
+        # 11-07 floor: two blind scans in a row turned the 0.8 m guess minus the walked 0.6 m into
+        # 'expected 20 cm: blocked'. Only a budget from a real echo is carried over.
+        self.budget_seen = a["seen"]["front"] is not None or (front is not None and self.budget_seen)
         if a["then"] is None:
             self._finish(msg)
         else:
             self.result = msg
             self.action = {"kind": "walk", "speed": a["then"][0], "until": now + a["then"][1]}
+            print(f"[result] {msg} -> walking", flush=True)
 
     def _obstacle_stop(self, now):
         """Lock held. Ends forward motion (walk / drive / test) at an obstacle."""
@@ -475,16 +554,21 @@ class Server:
         out so left and right turns get the same command."""
         if want == 0:
             return 0.0
-        if walking and self.model in TURN_LOOP_MODELS:
+        if walking and self.policy in TURN_LOOP_MODELS:
             side = 1 if want > 0 else -1
             step = TURN_LOOP_KI * (want - self.yaw_rate) * DT
-            self.turn_i[side] = float(np.clip(self.turn_i[side] + step, -TURN_LOOP_LIMIT, TURN_LOOP_LIMIT))
-            return want - self._yaw_trim() + self.turn_i[side]
+            ti = self.turn_i.setdefault(self.policy, dict(TURN_I_START_MODEL.get(self.policy, TURN_I_START)))
+            ti[side] = float(np.clip(ti[side] + step, -TURN_LOOP_LIMIT, TURN_LOOP_LIMIT))
+            cmd = want - self._yaw_trim() + ti[side]
+            if abs(cmd) > TURN_CMD_MAX:  # the correction stops growing at the cap (no wind-up)
+                cmd = TURN_CMD_MAX * float(np.sign(cmd))
+                ti[side] = cmd - want + self._yaw_trim()
+            return cmd
         return want - self._yaw_trim()
 
     def _yaw_trim(self):
-        if self.model in YAW_TRIM:
-            return YAW_TRIM[self.model]
+        if self.policy in YAW_TRIM:
+            return YAW_TRIM[self.policy]
         return 0.0 if self.model.startswith("mj_") else self.args.yaw_trim
 
     def _end_test(self, outcome):
@@ -511,18 +595,50 @@ class Server:
         with self.lock:
             if self.state == "running" or self.busy:
                 return {"ok": False, "error": "press pause first"}
-            if self.rl is not None and not self.args.fake:
-                self.rl.set_policy(os.path.join(SCRIPTS, MODEL_FILE.get(name, name) + ".onnx"))
+            if self.rl is not None:
                 with self.bus:  # the policy thread is paused or the servos are off
-                    self.rl.set_leg_kp(MODEL_KP.get(name, self.args.kp))
+                    self._load_model(self.rl, name)
+            else:  # loaded by power_on
+                self.policy = COMBOS.get(name, (name,))[0]
             self.model = name
         return self._ok(f"model {name}")
 
+    def _load_model(self, rl, name):
+        """Bus held, rl paused or off. Runs the model's first policy (a combo's walk
+        one) at the model's kp and preloads a combo's squat one for the swap."""
+        parts = COMBOS.get(name, (name,))
+        if not self.args.fake:
+            rl.set_policy(policy_path(parts[0]))
+            rl.set_leg_kp(MODEL_KP.get(name, self.args.kp))
+        self.loaded = {p: rl.load_policy(policy_path(p)) for p in parts} if len(parts) > 1 else {}
+        rl.next_policy = None
+        self.policy, self.swap, self.sit_flag, self.squat_at = parts[0], None, 0.0, None
+
+    def _swap_to(self, now, policy, delay):
+        """Lock held. Combo: run `policy` once `delay` s have passed with nothing to do."""
+        if policy == self.policy:
+            self.swap = None
+        elif self.swap is None or self.swap["to"] != policy:
+            self.swap = {"to": policy, "at": now + delay}
+
+    def _swap_step(self, now):
+        """Policy thread, lock held: hand the pending policy to the walker, which
+        takes it at its next step (this step's commands are already for it)."""
+        if self.swap is None or now < self.swap["at"] or self.action["kind"] != "idle":
+            return
+        to = self.swap["to"]
+        self.rl.next_policy = self.loaded[to]
+        self.policy, self.swap = to, None
+        if self._sit_model() and self.sit_flag:  # stand on sit8 first
+            self.sit_flag, self.squat_at = 0.0, now + SIT_SETTLE_S
+        self.result = f"squat model on: squat in {SIT_SETTLE_S} s" if self._sit_model() else "walk model back on"
+        print("[combo] now", to, flush=True)
+
     def _sit_model(self):
-        return "sit" in self.model
+        return "sit" in self.policy
 
     def _straight_speed(self):
-        return STRAIGHT_SPEED.get(self.model, STRAIGHT_SPEED_DEFAULT)
+        return STRAIGHT_SPEED.get(self.policy, STRAIGHT_SPEED_DEFAULT)
 
     def _settle(self, now, msg):
         """After a turn: a short straight walk, then stop (braking a fast turn tipped it over)."""
@@ -532,6 +648,7 @@ class Server:
     def _finish(self, result):
         self.action = {"kind": "idle"}
         self.result = result
+        print(f"[result] {result}", flush=True)  # 11-07: the journal shows why a walk did not start
 
     # ---------- battery ----------
     def _read_battery(self):
@@ -634,7 +751,9 @@ class Server:
                     return {"ok": False, "error": "battery critical"}
                 self.state = "running"
                 self.pause_at = None
-                self.sit_flag = 0.0
+                self.sit_flag, self.squat_at = 0.0, None
+                if self.model in COMBOS:  # a squat cut short by the pause: stand, then walk
+                    self._swap_to(time.time(), COMBOS[self.model][0], STAND_UP_S if self._sit_model() else 0.0)
                 self.scan_t, self.budget_m = 0.0, None  # it may have been carried: look before walking
                 self.rl.paused = False
                 return self._ok("started")
@@ -667,12 +786,33 @@ class Server:
             if kind in ("walk", "turn", "drive") and self.low_count >= 3:
                 return {"ok": False, "error": "battery critical"}
             now = time.time()
+            if kind == "posture" and self.model in COMBOS:
+                walk, sit = COMBOS[self.model]
+                if c.get("sit"):
+                    if self.action["kind"] == "test":
+                        return {"ok": False, "error": "test running: press stop to end it"}
+                    self._finish("stopping")
+                    self.sit_flag = 1.0  # read once the squat policy runs
+                    self._swap_to(now, sit, SWAP_STAND_S)
+                    return self._ok("squat" if self.policy == sit else f"stand still {SWAP_STAND_S:.0f} s, then squat")
+                self.sit_flag, self.squat_at = 0.0, None
+                self._swap_to(now, walk, STAND_UP_S)
+                return self._ok(f"stand up, walk model back in {STAND_UP_S:.0f} s" if self.policy == sit else "standing")
             if kind == "posture":
                 if not self._sit_model():
                     return {"ok": False, "error": "choose the squat model first"}
                 self.sit_flag = 1.0 if c.get("sit") else 0.0
                 self.last_moving = now
                 return self._ok("squat" if self.sit_flag else "stand up")
+            if self.model in COMBOS and (self._sit_model() or self.swap is not None):
+                if self._sit_model():  # a move stands it up and hands back to the walk policy
+                    self.sit_flag, self.squat_at = 0.0, None
+                    self._swap_to(now, COMBOS[self.model][0], STAND_UP_S)
+                elif self.swap["to"] != self.policy:  # cancel a squat that has not started
+                    self.swap, self.sit_flag, self.squat_at = None, 0.0, None
+                    self.result = "squat cancelled"
+                if self._sit_model():
+                    return {"ok": False, "error": "standing up first, try again in a few seconds"}
             if self._sit_model():
                 return {"ok": False, "error": "squat model: only squat and stand"}
             if self.action["kind"] == "test":
@@ -688,6 +828,9 @@ class Server:
                              float(np.clip(self.head[1], -HEAD_YAW_LIMIT, HEAD_YAW_LIMIT)), 0.0]
             if kind in ("walk", "drive", "abtest") and float(c.get("speed", c.get("fwd", 1))) > 0                     and float(c.get("turn", 0)) == 0 and self._obstacle_ahead() is not None:
                 return {"ok": False, "error": f"obstacle {self._obstacle_ahead() * 100:.0f} cm ahead"}
+            if kind in ("walk", "drive") and float(c.get("speed", c.get("fwd", 1))) > 0 \
+                    and self._sonar_on() and self._us_silent() and self.action["kind"] != "drive":
+                return {"ok": False, "error": "超声波没有回应：检查超声波接线，或关避障再走"}
             if kind == "walk":
                 speed = float(c.get("speed", self._straight_speed()))
                 sec = float(c.get("seconds", 2))
@@ -756,9 +899,8 @@ class Server:
             with self.bus:
                 if self.rl is None:
                     rl = self.make_rl()  # RLWalk.__init__ does turn_on (low kp -> init pose -> kp)
-                    if not self.args.fake and self.model != os.path.splitext(os.path.basename(self.args.onnx_model_path))[0]:
-                        rl.set_policy(os.path.join(SCRIPTS, MODEL_FILE.get(self.model, self.model) + ".onnx"))  # picked before power_on
-                        rl.set_leg_kp(MODEL_KP.get(self.model, self.args.kp))
+                    if self.model != os.path.splitext(os.path.basename(self.args.onnx_model_path))[0]:
+                        self._load_model(rl, self.model)  # picked before power_on
                     rl.paused = True
                     rl.last_commands = [0.0] * 7
                     get_obs = rl.get_obs
@@ -769,6 +911,8 @@ class Server:
                 else:
                     rl = self.rl
                     rl.paused = True
+                    if self.policy != COMBOS.get(self.model, (self.model,))[0] or self.swap is not None:
+                        self._load_model(rl, self.model)  # fell or relaxed mid-squat: back to walking
                     if not self.args.fake:
                         hwi = rl.hwi
                         ids = list(hwi.joints.values())
@@ -857,9 +1001,10 @@ class Server:
                     "heading_deg": round(float(np.degrees(self.hold.heading)), 1),
                     "head": self.head, "fall_tilt": round(self.tilt, 1),
                     "distance_cm": (round(self.us.fresh() * 100) if self.us is not None and self.us.fresh() is not None else None),
-                    "avoid": self.avoid, "has_us": self.us is not None,
+                    "avoid": self.avoid, "has_us": self.us is not None, "us_silent": self._us_silent(),
                     "avoid_cm": [round(OBSTACLE_STOP_M * 100), round(OBSTACLE_SLOW_M * 100)],
                     "model": self.model, "models": MODELS, "tests": self.tests[-10:],
+                    "policy": self.policy, "squat": self._sit_model() and self.sit_flag > 0,
                     "test_elapsed": round(time.time() - self.action["t0"], 1)
                     if self.action["kind"] == "test" else None}
 
@@ -881,6 +1026,7 @@ class FakeWalk:
     def __init__(self, drift=-0.2, gain=1.2):
         self.paused, self.last_commands = True, [0.0] * 7
         self.drift, self.gain = drift, gain
+        self.next_policy = None
         self.hwi = type("H", (), {"turn_off": staticmethod(lambda: None)})()
 
     def get_obs(self):
@@ -891,9 +1037,14 @@ class FakeWalk:
         o[97:99] = 1.0
         return o
 
+    @staticmethod
+    def load_policy(path):
+        return None, path
+
     def run(self):
         while True:
             if not self.paused:
+                self.next_policy = None
                 self.get_obs()
             time.sleep(DT)
 

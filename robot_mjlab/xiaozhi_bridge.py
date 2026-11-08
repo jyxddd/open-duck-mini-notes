@@ -19,6 +19,7 @@ import argparse
 import asyncio
 import json
 import os
+import threading
 import time
 import urllib.request
 
@@ -52,8 +53,19 @@ TOOLS = [
     {"name": "duck_poweroff_yes",
      "description": "刚问过鸭子是否放在架子上，用户回答是、对、放好了时调用，这才真正关机。用户没回答或回答不是时不要调用。",
      "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "duck_head",
+     "description": "让鸭子点头、摇头、歪头或抬头后仰。鸭子要已开始运行、站着不动。",
+     "inputSchema": {"type": "object",
+                     "properties": {"gesture": {"type": "string", "enum": ["nod", "shake", "tilt", "up"], "description": "nod 点头，shake 摇头，tilt 歪头，up 抬头后仰"}},
+                     "required": ["gesture"]}},
     {"name": "duck_status",
-     "description": "查询鸭子的状态和电池电压。",
+     "description": "查询鸭子的状态、电池电压和前方障碍物距离。",
+     "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "duck_squat",
+     "description": "让鸭子蹲下（蹲着休息）。鸭子要已开始运行、站在地上。蹲下后走路、转弯会先让它站起来。",
+     "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "duck_stand_up",
+     "description": "让蹲着的鸭子站起来。",
      "inputSchema": {"type": "object", "properties": {}}},
 ]
 
@@ -67,7 +79,20 @@ def duck_cmd(base, **cmd):
     return json.load(opener.open(req, timeout=3))
 
 
+# (pitch, yaw) in rad, turned at up to 0.5 rad/s, pitch 0.12 rad/s
+GESTURES = {"nod": [(-0.15, 0.0, 0.0), (0.15, 0.0, 0.0), (0.0, 0.0, 0.0)],
+            "shake": [(0.0, 0.4, 0.0), (0.0, -0.4, 0.0), (0.0, 0.0, 0.0)],
+            "tilt": [(0.0, 0.0, 0.25), (0.0, 0.0, -0.25), (0.0, 0.0, 0.0)],
+            "up": [(0.75, 0.0, 0.0), (0.75, 0.0, 0.0), (0.0, 0.0, 0.0)]}
+GESTURE_STEP_S = {"nod": 2.5, "shake": 1.5, "tilt": 1.5, "up": 3.5}
 poweroff_asked = 0.0
+
+
+def gesture(base, name):
+    """Runs in its own thread: a stop must not wait for the head."""
+    for pitch, yaw, roll in GESTURES[name]:
+        duck_cmd(base, action="head", pitch=pitch, yaw=yaw, roll=roll)
+        time.sleep(GESTURE_STEP_S[name])
 
 
 def poweroff(base, yes):
@@ -91,7 +116,27 @@ def call_tool(base, name, args):
     """Returns (text, is_error)."""
     if name == "duck_status":
         s = duck_get(base)
-        return f"状态 {s['state']}，电池 {s['battery_v']} 伏，{s['result']}", False
+        if not s.get("has_us"):
+            front = "没有超声波"
+        elif s.get("us_silent") or s.get("distance_cm") is None:
+            front = "超声波没有读数"
+        else:
+            front = f"前方 {s['distance_cm']} 厘米"
+        return f"状态 {s['state']}，电池 {s['battery_v']} 伏，{front}，{s['result']}", False
+    if name in ("duck_squat", "duck_stand_up"):
+        sit = name == "duck_squat"
+        r = duck_cmd(base, action="posture", sit=sit)
+        if r.get("ok"):
+            return ("好的，先站稳两秒再蹲下" if sit else "好的，站起来"), False
+        return r.get("error", "现在不能"), True
+    if name == "duck_head":
+        if args.get("gesture") not in GESTURES:
+            return "只会点头、摇头、歪头和抬头", True
+        r = duck_cmd(base, action="head", pitch=0.0, yaw=0.0)
+        if not r.get("ok"):
+            return r.get("error", "现在不能动头"), True
+        threading.Thread(target=gesture, args=(base, args["gesture"]), daemon=True).start()
+        return "好的", False
     if name == "duck_poweroff":
         return poweroff(base, False)
     if name == "duck_poweroff_yes":
