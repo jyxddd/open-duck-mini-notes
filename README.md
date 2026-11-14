@@ -14,6 +14,7 @@ Raspberry Pi Zero 2W + the official runtime + Heima (icheima) printed parts and 
 | 组装与调试问题 / Assembly and debugging | [组装与调试问题记录](docs/组装与调试问题记录.md) | [Assembly and debugging notes](docs/assembly_and_debugging_notes.md) |
 | 改用 Microduck 训练方法 / Microduck training method | [改造为MicroDuck模型记录](docs/改造为MicroDuck模型记录.md) | [Microduck training port](docs/microduck_training_port.md) |
 | 蹲下 / 站起 / Squat and stand | [蹲下站起记录](docs/蹲下站起记录.md) | [Squat / stand notes](docs/squat_stand_notes.md) |
+| 左右腿对称改造 / Symmetric legs retrofit | [左右腿对称改造记录](docs/左右腿对称改造记录.md) | [Symmetric legs retrofit](docs/symmetric_legs_retrofit.md) |
 | 横移 / 后退步态训练 / Side-step and backward gait | [横移后退步态训练记录](docs/横移后退步态训练记录.md) | [Side-step / backward gait training](docs/side_step_backward_gait_training.md) |
 | 超声波避障 / Ultrasonic obstacle avoidance | [超声波避障记录](docs/超声波避障记录.md) | [Ultrasonic obstacle avoidance](docs/ultrasonic_obstacle_avoidance.md) |
 | 语音与音响（小智）/ Voice and speaker (XiaoZhi) | [语音音响改造记录](docs/语音音响改造记录.md) | [Voice and speaker retrofit](docs/voice_speaker_retrofit.md) |
@@ -39,6 +40,7 @@ Raspberry Pi Zero 2W + the official runtime + Heima (icheima) printed parts and 
 | `robot_mjlab/` | 树莓派上的服务、手机页面、超声波、小智桥接 | Pi service, phone page, ultrasonic sensor, XiaoZhi bridge |
 | `xiaozhi/` | 小智固件补丁（计时、本地指令） | XiaoZhi firmware patches (timer, local commands) |
 | `training/` | 训练补丁和奖励函数（横移 / 后退要领） | Training patches and reward functions (side-step / backward technique) |
+| `cad/` | 自己改的打印件（对称右腿：右膝 cradle、镜像右脚）和生成脚本 | Own printed parts (symmetric right leg: right knee cradle, mirrored right foot) and their scripts |
 | `windows/` | Windows 一键启动行走 / 关机 | Windows one-click walk / shutdown |
 
 ## 键盘遥控行走 / Keyboard walking
