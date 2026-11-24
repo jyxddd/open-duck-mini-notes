@@ -19,6 +19,8 @@ Raspberry Pi Zero 2W + the official runtime + Heima (icheima) printed parts and 
 | 超声波避障 / Ultrasonic obstacle avoidance | [超声波避障记录](docs/超声波避障记录.md) | [Ultrasonic obstacle avoidance](docs/ultrasonic_obstacle_avoidance.md) |
 | 语音与音响（小智）/ Voice and speaker (XiaoZhi) | [语音音响改造记录](docs/语音音响改造记录.md) | [Voice and speaker retrofit](docs/voice_speaker_retrofit.md) |
 | 视频接入方案 / Camera plan | [视频接入方案](docs/视频接入方案.md) | [Camera plan](docs/video_plan.md) |
+| 自制 v2 鸭子仿真训练（走、转、爬起、坐站）/ Home-made v2 duck: sim training | [v2仿真训练总结](docs/v2仿真训练总结.md) | [v2 simulation training summary](docs/v2_sim_training_summary.md) |
+| 仿真漏洞 / Simulation loopholes | [仿真漏洞记录](docs/仿真漏洞记录.md) | [Simulation loopholes](docs/sim_loopholes.md) |
 
 ## 最重要的三个发现 / The three most important findings
 
